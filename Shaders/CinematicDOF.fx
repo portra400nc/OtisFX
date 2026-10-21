@@ -518,8 +518,7 @@ namespace CinematicDOF
 		float focusDepthInM : TEXCOORD2;
 		float focusDepthInMM : TEXCOORD3;
 		float pixelSizeLength : TEXCOORD4;
-		float nearPlaneInMM : TEXCOORD5;
-		float farPlaneInMM : TEXCOORD6;
+		float3 focusPlane : TEXCOORD5;		// dot(float3(texcoord, 1), focusPlane) = focusDepth / focus distance along that pixel's ray
 	};
 
 	struct VSDISCBLURINFO
@@ -704,12 +703,15 @@ namespace CinematicDOF
 		// For the people getting confused: 
 		// Remember element sizes are in mm, our depth sizes are in meter, so we have to divide S1 by 1000 to get from meter -> mm. We don't have to
 		// divide the elements in the 'abs(x-S1)/x' part, as the 1000.0 will then simply be muted out (as  a / (x/1000) == a * (1000/x))
-		// formula: (((f*f) / N) / ((S1/1000.0) -f)) * (abs(x - S1) / x)
+		// formula: (((f*f) / N) / ((S1/1000.0) -f)) * (abs(S1 - x * k) / x)
 		// where f = FocalLength, N = FNumber, S1 = focusInfo.focusDepthInM, x = pixelDepthInM. In-lined to save on registers. 
+		// k = S1 / (this pixel's focus distance), which is 1 everywhere without tilt. It's linear in 1/distance, so the focus distance can go
+		// beyond infinity (k <= 0) and the gain stays the one of the focus point, which keeps the in-focus band a constant width in 1/distance.
+		float focusRatio = dot(float3(focusInfo.texcoord, 1.0), focusInfo.focusPlane);
 		float cocInMM = (((FocalLength*FocalLength) / FNumber) / ((focusInfo.focusDepthInM/1000.0) -FocalLength)) * 
-						(abs(pixelDepthInM - focusInfo.focusDepthInM) / (pixelDepthInM + (pixelDepthInM==0)));
+						(abs(focusInfo.focusDepthInM - pixelDepthInM * focusRatio) / (pixelDepthInM + (pixelDepthInM==0)));
 		float toReturn = clamp(saturate(abs(cocInMM) * SENSOR_SIZE), 0, 1); // divide by sensor size to get coc in % of screen (or better: in sampler units)
-		return (pixelDepth < focusInfo.focusDepth) ? -toReturn : toReturn;
+		return (pixelDepth * focusRatio < focusInfo.focusDepth) ? -toReturn : toReturn;
 	}
 
 
@@ -1029,12 +1031,7 @@ namespace CinematicDOF
 		toFill.focusDepthInM = toFill.focusDepth * 1000.0; 		// km to m
 		toFill.focusDepthInMM = toFill.focusDepthInM * 1000.0; 	// m to mm
 		toFill.pixelSizeLength = length(BUFFER_PIXEL_SIZE);
-		
-		// HyperFocal calculation, see https://photo.stackexchange.com/a/33898. Useful to calculate the edges of the depth of field area
-		float hyperFocal = (FocalLength * FocalLength) / (FNumber * SENSOR_SIZE);
-		float hyperFocalFocusDepthFocus = (hyperFocal * toFill.focusDepthInMM);
-		toFill.nearPlaneInMM = (hyperFocalFocusDepthFocus / (hyperFocal + (toFill.focusDepthInMM - FocalLength)));	// in mm
-		toFill.farPlaneInMM = hyperFocalFocusDepthFocus / (hyperFocal - (toFill.focusDepthInMM - FocalLength));		// in mm
+		toFill.focusPlane = float3(0, 0, 1);
 	}
 
 	// From: https://www.shadertoy.com/view/4lfGDs
@@ -1122,8 +1119,7 @@ namespace CinematicDOF
 		focusInfo.focusDepthInM = 0;
 		focusInfo.focusDepthInMM = 0;
 		focusInfo.pixelSizeLength = 0;
-		focusInfo.nearPlaneInMM = 0;
-		focusInfo.farPlaneInMM = 0;
+		focusInfo.focusPlane = 0;
 #else
 		FillFocusInfoData(focusInfo);
 #endif
@@ -1421,8 +1417,12 @@ namespace CinematicDOF
 		if(ShowOutOfFocusPlaneOnMouseDown && LeftMouseDown)
 		{
 			float depthPixelInMM = ReShade::GetLinearizedDepth(focusInfo.texcoord) * 1000.0 * 1000.0;
+			float focusRatio = dot(float3(focusInfo.texcoord, 1.0), focusInfo.focusPlane);
+			// HyperFocal calculation, see https://photo.stackexchange.com/a/33898. Useful to calculate the edges of the depth of field area.
+			// The near/far limits are compared in 1/distance, multiplied out to avoid divisions, so they follow a tilted focus plane past infinity.
+			float hyperFocal = (FocalLength * FocalLength) / (FNumber * SENSOR_SIZE);
 			float4 colorToBlend = fragment;
-			if(depthPixelInMM < focusInfo.nearPlaneInMM || (focusInfo.farPlaneInMM > 0 && depthPixelInMM > focusInfo.farPlaneInMM))
+			if(abs(focusInfo.focusDepthInMM - depthPixelInMM * focusRatio) * hyperFocal > depthPixelInMM * (focusInfo.focusDepthInMM - FocalLength * focusRatio))
 			{
 				colorToBlend = float4(OutOfFocusPlaneColor, 1.0);
 			}
