@@ -32,6 +32,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Version history:
+// 21-oct-2026:    v1.2.11: Added tilt-shift: the plane of focus can be tilted like with a tilt-shift lens and goes through the focus point. Contributed by portra400nc.
 // 16-aug-2023:	   v1.2.10: Added Cone Overlap support so the HDR conversion first desaturates the colors so channels with a high value don't 
 //                          exponentially boost to irrealistic values. Contributed by MartyMcFly.
 // 26-jun-2023:	   v1.2.9:  Found a way to compensate for edges on close to in-focus geometry shimmering through which were otherwise only removable with the NearFarDistanceCompensation added
@@ -112,7 +113,7 @@
 
 namespace CinematicDOF
 {
-	#define CINEMATIC_DOF_VERSION "v1.2.10"
+	#define CINEMATIC_DOF_VERSION "v1.2.11"
 
 // Uncomment line below for debug info / code / controls
 //	#define CD_DEBUG 1
@@ -202,6 +203,23 @@ namespace CinematicDOF
 		ui_step = 0.1;
 		ui_tooltip = "The f-number (also known as f-stop) to use. The higher the number, the wider\nthe depth of field, meaning the more is in-focus and thus the less is out of focus.\nFor portraits, start with 2.8.";
 	> = 2.8;
+	// ------------- TILT-SHIFT
+	uniform float TiltShiftAngle <
+		ui_category = "Tilt-shift";
+		ui_label = "Tilt (degrees)";
+		ui_type = "drag";
+		ui_min = -15.0; ui_max = 15.0;
+		ui_step = 0.1;
+		ui_tooltip = "Tilts the lens so the plane of focus is no longer parallel to the screen. 0 is off.\nPositive values move the focus further away towards the top of the screen, so a floor\nor landscape can be in focus from near to far. Negative values give the miniature look:\na thin band in focus with blur above and below it. The plane always goes through the\nfocus point, so moving the focus point shifts the plane.";
+	> = 0.0;
+	uniform float TiltShiftDirection <
+		ui_category = "Tilt-shift";
+		ui_label = "Tilt direction (degrees)";
+		ui_type = "drag";
+		ui_min = -90.0; ui_max = 90.0;
+		ui_step = 0.1;
+		ui_tooltip = "Rotates the direction in which the focus changes. 0 changes it from top to bottom.\nPositive values rotate it clockwise. 90 and -90 change it from left to right.\nOnly used if 'Tilt (degrees)' isn't 0.";
+	> = 0.0;
 #ifndef __RESHADE_FXC__		// Reshade
 	// ------------- FOCUSING, OVERLAY
 	uniform bool ShowOutOfFocusPlaneOnMouseDown <
@@ -1031,7 +1049,21 @@ namespace CinematicDOF
 		toFill.focusDepthInM = toFill.focusDepth * 1000.0; 		// km to m
 		toFill.focusDepthInMM = toFill.focusDepthInM * 1000.0; 	// m to mm
 		toFill.pixelSizeLength = length(BUFFER_PIXEL_SIZE);
-		toFill.focusPlane = float3(0, 0, 1);
+
+		// Tilt-shift. Merklinger's hinge rule: a lens tilted by t puts the plane of focus through a line at f / sin(t) from the lens, in the plane
+		// through the lens parallel to the sensor, and through the focus point. 1/focus distance along a pixel's ray is then linear in the
+		// pixel's screen position: per half screen height from the center it changes by (half sensor height / f) * sin(t) / f.
+#if __RESHADE_FXC__		// Freestyle
+		float2 focusPoint = AutoFocusPoint;
+#else
+		float2 focusPoint = (UseAutoFocus && UseMouseDrivenAutoFocus) ? MouseCoords * BUFFER_PIXEL_SIZE : AutoFocusPoint;
+#endif
+		float2 tiltDirection;
+		sincos(radians(TiltShiftDirection), tiltDirection.x, tiltDirection.y);
+		float focusRatioPerScreenUnit = toFill.focusDepthInMM * (SENSOR_SIZE * 500.0 / FocalLength) * sin(radians(TiltShiftAngle)) / FocalLength;
+		// The ratio falls along the tilt direction as the focus distance grows. texcoord spans 2 screen units (x: times the aspect ratio), y points down.
+		toFill.focusPlane.xy = 2.0 * focusRatioPerScreenUnit * float2(-tiltDirection.x * BUFFER_SCREEN_SIZE.x * BUFFER_PIXEL_SIZE.y, tiltDirection.y);
+		toFill.focusPlane.z = 1.0 - dot(toFill.focusPlane.xy, focusPoint);
 	}
 
 	// From: https://www.shadertoy.com/view/4lfGDs
