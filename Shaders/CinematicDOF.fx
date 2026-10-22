@@ -32,6 +32,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Version history:
+// 22-oct-2026:    v1.2.12: Added physical blur: the blur of a real lens with the set focal length and aperture on a full-frame sensor, capped by the max blur settings. Contributed by portra400nc.
 // 21-oct-2026:    v1.2.11: Added tilt-shift: the plane of focus can be tilted like with a tilt-shift lens and goes through the focus point. Contributed by portra400nc.
 // 16-aug-2023:	   v1.2.10: Added Cone Overlap support so the HDR conversion first desaturates the colors so channels with a high value don't 
 //                          exponentially boost to irrealistic values. Contributed by MartyMcFly.
@@ -113,7 +114,7 @@
 
 namespace CinematicDOF
 {
-	#define CINEMATIC_DOF_VERSION "v1.2.11"
+	#define CINEMATIC_DOF_VERSION "v1.2.12"
 
 // Uncomment line below for debug info / code / controls
 //	#define CD_DEBUG 1
@@ -254,6 +255,11 @@ namespace CinematicDOF
 	> = float4(1.0, 0.0, 1.0, 1.0);
 #endif
 	// ------------- BLUR TWEAKING
+	uniform bool UsePhysicalBlur <
+		ui_category = "Blur tweaking";
+		ui_label = "Use physical blur";
+		ui_tooltip = "If enabled, the blur is the one of a real lens with the 'Focal length' and 'Aperture' set, on a 35mm full-frame\nsensor (24mm high). It assumes one unit of depth is a meter (ReShade's linearized depth times 1000).\n'Far plane max blur' and 'Near plane max blur' then only cap the blur.\nIf disabled, the shader uses its classic, much stronger blur.";
+	> = false;
 	uniform float FarPlaneMaxBlur <
 		ui_category = "Blur tweaking";
 		ui_label = "Far plane max blur";
@@ -726,10 +732,27 @@ namespace CinematicDOF
 		// k = S1 / (this pixel's focus distance), which is 1 everywhere without tilt. It's linear in 1/distance, so the focus distance can go
 		// beyond infinity (k <= 0) and the gain stays the one of the focus point, which keeps the in-focus band a constant width in 1/distance.
 		float focusRatio = dot(float3(focusInfo.texcoord, 1.0), focusInfo.focusPlane);
-		float cocInMM = (((FocalLength*FocalLength) / FNumber) / ((focusInfo.focusDepthInM/1000.0) -FocalLength)) * 
-						(abs(focusInfo.focusDepthInM - pixelDepthInM * focusRatio) / (pixelDepthInM + (pixelDepthInM==0)));
-		float toReturn = clamp(saturate(abs(cocInMM) * SENSOR_SIZE), 0, 1); // divide by sensor size to get coc in % of screen (or better: in sampler units)
-		return (pixelDepth * focusRatio < focusInfo.focusDepth) ? -toReturn : toReturn;
+		bool isNearPlane = pixelDepth * focusRatio < focusInfo.focusDepth;
+		float toReturn;
+		if(UsePhysicalBlur)
+		{
+			// The thin lens focused at this pixel's focus distance S1 / k: (f*f/N) / (S1 - f*k) * abs(S1 - x*k) / x, with S1 - f*k in mm,
+			// as in the out-of-focus overlay. A pixel focused within the focal length can't be sharp, so it gets the max blur.
+			float cocInMM = (((FocalLength*FocalLength) / FNumber) / max(focusInfo.focusDepthInMM - FocalLength * focusRatio, 0.001)) *
+							(abs(focusInfo.focusDepthInM - pixelDepthInM * focusRatio) / (pixelDepthInM + (pixelDepthInM==0)));
+			// The blur passes multiply the CoC with the plane's max blur in pixels, so dividing by it keeps the radius real and the max blur a cap.
+			float radiusInPixels = 0.5 * (cocInMM / (SENSOR_SIZE * 1000.0)) * BUFFER_HEIGHT;
+			float maxBlurInPixels = ((isNearPlane ? NearPlaneMaxBlur : FarPlaneMaxBlur) / 100.0) / length(BUFFER_PIXEL_SIZE);
+			toReturn = maxBlurInPixels > 0 ? saturate(radiusInPixels / maxBlurInPixels) : 0;
+		}
+		else
+		{
+			// S1/1000.0 is in km, not mm, which makes this blur far stronger than a real lens. Kept, as presets are tuned to it.
+			float cocInMM = (((FocalLength*FocalLength) / FNumber) / ((focusInfo.focusDepthInM/1000.0) -FocalLength)) *
+							(abs(focusInfo.focusDepthInM - pixelDepthInM * focusRatio) / (pixelDepthInM + (pixelDepthInM==0)));
+			toReturn = clamp(saturate(abs(cocInMM) * SENSOR_SIZE), 0, 1); // divide by sensor size to get coc in % of screen (or better: in sampler units)
+		}
+		return isNearPlane ? -toReturn : toReturn;
 	}
 
 
