@@ -682,13 +682,19 @@ namespace CinematicDOF
 		return minCoC;
 	}
 
+	// The CoC under which a pixel counts as in focus. A physical CoC is a share of the plane's max blur, so there it's a blur disc one pixel across.
+	float InFocusCoCLimit(float coc)
+	{
+		return length(BUFFER_PIXEL_SIZE) * (UsePhysicalBlur ? 50.0 / (coc < 0 ? NearPlaneMaxBlur : FarPlaneMaxBlur) : 1.0);
+	}
+
 	// Calculates an RGBA fragment based on the CoC radius specified, for debugging purposes.
 	// In: 	radius, the CoC radius to calculate the fragment for
 	//		showInFocus, flag which will give a blue edge at the focus plane if true
 	// Out:	RGBA fragment for color buffer based on the radius specified. 
 	float4 GetDebugFragment(float radius, bool showInFocus)
 	{
-		float4 toReturn = (radius/2 <= length(BUFFER_PIXEL_SIZE)) && showInFocus ? float4(0.0, 0.0, 1.0, 1.0) : float4(radius, radius, radius, 1.0);
+		float4 toReturn = (radius/2 <= InFocusCoCLimit(radius)) && showInFocus ? float4(0.0, 0.0, 1.0, 1.0) : float4(radius, radius, radius, 1.0);
 		if(radius < 0)
 		{
 			toReturn = float4(-radius, 0, 0, 1);
@@ -1454,8 +1460,8 @@ namespace CinematicDOF
 		float noise = tex2D(SamplerCDNoise, uv).x; // read, uv is scaled, sampler is set to tile noise texture (WRAP)
 		fragment.xyz = saturate(fragment.xyz + lerp( -0.5/255.0, 0.5/255.0, noise)); // apply dither
 		// End Dither
-		float coc = abs(tex2Dlod(SamplerCDCoC, float4(focusInfo.texcoord, 0, 0)).r);
-		fragment.rgb = lerp(originalFragment.rgb, fragment.rgb, saturate(coc < length(BUFFER_PIXEL_SIZE) ? 0 : 4 * coc));
+		float coc = tex2Dlod(SamplerCDCoC, float4(focusInfo.texcoord, 0, 0)).r;
+		fragment.rgb = lerp(originalFragment.rgb, fragment.rgb, saturate(abs(coc) < InFocusCoCLimit(coc) ? 0 : 4 * abs(coc)));
 		fragment.w = 1.0;
 		
 #if __RENDERER__ <= 0x9300 	// doing focusing in vertex shaders in dx9 doesn't work for auto-focus, so we'll just do it in the pixel shader instead
