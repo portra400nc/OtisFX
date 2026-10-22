@@ -32,6 +32,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Version history:
+// 22-oct-2026:    v1.2.13: Added the camera near plane setting, which converts the depth to real meters for the focus, the tilt and the blur. Contributed by portra400nc.
 // 22-oct-2026:    v1.2.12: Added physical blur: the blur of a real lens with the set focal length and aperture on a full-frame sensor, capped by the max blur settings. Contributed by portra400nc.
 // 21-oct-2026:    v1.2.11: Added tilt-shift: the plane of focus can be tilted like with a tilt-shift lens and goes through the focus point. Contributed by portra400nc.
 // 16-aug-2023:	   v1.2.10: Added Cone Overlap support so the HDR conversion first desaturates the colors so channels with a high value don't 
@@ -114,7 +115,7 @@
 
 namespace CinematicDOF
 {
-	#define CINEMATIC_DOF_VERSION "v1.2.12"
+	#define CINEMATIC_DOF_VERSION "v1.2.13"
 
 // Uncomment line below for debug info / code / controls
 //	#define CD_DEBUG 1
@@ -260,6 +261,14 @@ namespace CinematicDOF
 		ui_label = "Use physical blur";
 		ui_tooltip = "If enabled, the blur is the one of a real lens with the 'Focal length' and 'Aperture' set, on a 35mm full-frame\nsensor (24mm high). It assumes one unit of depth is a meter (ReShade's linearized depth times 1000).\n'Far plane max blur' and 'Near plane max blur' then only cap the blur.\nIf disabled, the shader uses its classic, much stronger blur.";
 	> = false;
+	uniform float DepthNearPlane <
+		ui_category = "Blur tweaking";
+		ui_label = "Camera near plane (m)";
+		ui_type = "drag";
+		ui_min = 0.0; ui_max = 1.0;
+		ui_step = 0.001;
+		ui_tooltip = "The near clip distance of the game's camera, in meters. If set, the depth is converted to real meters\nfor the focus, the tilt and the blur. 0 uses ReShade's depth as it is.";
+	> = 0.0;
 	uniform float FarPlaneMaxBlur <
 		ui_category = "Blur tweaking";
 		ui_label = "Far plane max blur";
@@ -718,13 +727,26 @@ namespace CinematicDOF
 		return shapeTap;
 	}
 
+	// The distance in meters of a linearized depth. With the camera's near plane set, it undoes ReShade's linearization
+	// lin = x / (FAR - x * (FAR - 1)), where x, the depth buffer after ReShade's flip of a reversed one, is 1 - near / z for a far plane far
+	// beyond the near plane. So 1 / z = (1 - lin) / ((1 + lin * (FAR - 1)) * near), and the sky (lin = 1) is at infinity, kept at 1000km.
+	float DepthInM(float linearDepth)
+	{
+		if(DepthNearPlane <= 0)
+		{
+			return linearDepth * 1000.0;
+		}
+		float inverseDepth = (1.0 - linearDepth) / ((1.0 + linearDepth * (RESHADE_DEPTH_LINEARIZATION_FAR_PLANE - 1.0)) * DepthNearPlane);
+		return 1.0 / max(inverseDepth, 0.000001);
+	}
+
 	// Calculates the blur disc size for the pixel at the texcoord specified. A blur disc is the CoC size at the image plane.
 	// In:	VSFOCUSINFO struct filled by the vertex shader VS_Focus
 	// Out:	The blur disc size for the pixel at texcoord. Format: near plane: < 0. In-focus: 0. Far plane: > 0. Range: [-1, 1].
 	float CalculateBlurDiscSize(VSFOCUSINFO focusInfo)
 	{
 		float pixelDepth = ReShade::GetLinearizedDepth(focusInfo.texcoord);
-		float pixelDepthInM = pixelDepth * 1000.0;			// in meter
+		float pixelDepthInM = DepthInM(pixelDepth);			// in meter
 
 		// CoC (blur disc size) calculation based on [Lee2008]
 		// CoC = ((EF / Zf - F) * (abs(Z-Zf) / Z)
@@ -738,7 +760,8 @@ namespace CinematicDOF
 		// k = S1 / (this pixel's focus distance), which is 1 everywhere without tilt. It's linear in 1/distance, so the focus distance can go
 		// beyond infinity (k <= 0) and the gain stays the one of the focus point, which keeps the in-focus band a constant width in 1/distance.
 		float focusRatio = dot(float3(focusInfo.texcoord, 1.0), focusInfo.focusPlane);
-		bool isNearPlane = pixelDepth * focusRatio < focusInfo.focusDepth;
+		// In ReShade's depth the test stays the one presets were made with.
+		bool isNearPlane = DepthNearPlane > 0 ? pixelDepthInM * focusRatio < focusInfo.focusDepthInM : pixelDepth * focusRatio < focusInfo.focusDepth;
 		float toReturn;
 		if(UsePhysicalBlur)
 		{
@@ -1075,7 +1098,7 @@ namespace CinematicDOF
 		// 1000 to make it equal to a depth value read from the depth linearized depth buffer.
 		// Read from sampler on current focus which is a 1x1 texture filled with the actual depth value of the focus point to use.
 		toFill.focusDepth = tex2Dlod(SamplerCDCurrentFocus, float4(0, 0, 0, 0)).r;
-		toFill.focusDepthInM = toFill.focusDepth * 1000.0; 		// km to m
+		toFill.focusDepthInM = DepthInM(toFill.focusDepth);
 		toFill.focusDepthInMM = toFill.focusDepthInM * 1000.0; 	// m to mm
 		toFill.pixelSizeLength = length(BUFFER_PIXEL_SIZE);
 
@@ -1477,7 +1500,7 @@ namespace CinematicDOF
 #endif
 		if(ShowOutOfFocusPlaneOnMouseDown && LeftMouseDown)
 		{
-			float depthPixelInMM = ReShade::GetLinearizedDepth(focusInfo.texcoord) * 1000.0 * 1000.0;
+			float depthPixelInMM = DepthInM(ReShade::GetLinearizedDepth(focusInfo.texcoord)) * 1000.0;
 			float focusRatio = dot(float3(focusInfo.texcoord, 1.0), focusInfo.focusPlane);
 			// HyperFocal calculation, see https://photo.stackexchange.com/a/33898. Useful to calculate the edges of the depth of field area.
 			// The near/far limits are compared in 1/distance, multiplied out to avoid divisions, so they follow a tilted focus plane past infinity.
