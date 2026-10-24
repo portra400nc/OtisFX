@@ -32,6 +32,7 @@
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Version history:
+// 24-oct-2026:    v1.2.14: Near plane max blur goes up to 8, like the far plane, for the strong blur of miniature scenes. Contributed by portra400nc.
 // 22-oct-2026:    v1.2.13: Added the camera near plane setting, which converts the depth to real meters for the focus, the tilt and the blur. Contributed by portra400nc.
 // 22-oct-2026:    v1.2.12: Added physical blur: the blur of a real lens with the set focal length and aperture on a full-frame sensor, capped by the max blur settings. Contributed by portra400nc.
 // 21-oct-2026:    v1.2.11: Added tilt-shift: the plane of focus can be tilted like with a tilt-shift lens and goes through the focus point. Contributed by portra400nc.
@@ -115,7 +116,7 @@
 
 namespace CinematicDOF
 {
-	#define CINEMATIC_DOF_VERSION "v1.2.13"
+	#define CINEMATIC_DOF_VERSION "v1.2.14"
 
 // Uncomment line below for debug info / code / controls
 //	#define CD_DEBUG 1
@@ -281,7 +282,7 @@ namespace CinematicDOF
 		ui_category = "Blur tweaking";
 		ui_label = "Near plane max blur";
 		ui_type = "drag";
-		ui_min = 0.000; ui_max = 4.0;
+		ui_min = 0.000; ui_max = 8.0;
 		ui_step = 0.01;
 		ui_tooltip = "The maximum blur a pixel can have when it has its maximum CoC in the near Plane. Use this as a tweak to\nadjust the max near plane blur defined by the lens parameters.  Don't use this as your primarily blur factor,\nuse the lens parameters Focal Length and Aperture for that instead.";
 	> = 1.0;
